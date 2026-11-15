@@ -16,9 +16,7 @@ jobs:
         run: |
           uname -m
           xcodebuild -version
-          sw_vers
           xcrun --sdk iphoneos --show-sdk-version
-          xcrun --sdk iphoneos --show-sdk-path
 
       - name: Build (unsigned)
         run: |
@@ -37,15 +35,18 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="" \
             DEVELOPMENT_TEAM="" \
             CONFIGURATION_BUILD_DIR=./build/Release-iphoneos \
-            build 2>&1 | tee build.log | tail -n 150
+            build 2>&1 | tee build.log | tail -n 200
 
-      - name: Show errors
-        if: failure()
+      - name: Surface compile errors
+        if: failure() || success()
         run: |
-          echo "=== error lines ==="
-          grep -nE "error:|warning: .*Swift" build.log | head -n 60 || true
+          echo "==== grep errors ===="
+          grep -nE "error:|fatal error:|BUILD FAILED|The following build commands failed" build.log | head -n 50 || echo "(no error lines)"
+          echo "==== grep swift diagnostics ===="
+          grep -nE "^/.*\.swift:[0-9]+:[0-9]+: (error|warning)" build.log | head -n 50 || echo "(none)"
 
       - name: Verify binary
+        if: success()
         run: |
           APP=$(find ./build -maxdepth 4 -name "SkyPins.app" -type d | head -n 1)
           echo "APP=$APP"
@@ -56,6 +57,7 @@ jobs:
           plutil -p "$APP/Info.plist" | head -n 40
 
       - name: Ad-hoc sign and package IPA
+        if: success()
         run: |
           set -e
           APP=$(find ./build -maxdepth 4 -name "SkyPins.app" -type d | head -n 1)
@@ -70,6 +72,7 @@ jobs:
           unzip -l SkyPins.ipa | head -n 30
 
       - name: Upload IPA
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: SkyPins-ipa
@@ -77,3 +80,11 @@ jobs:
             SkyPins.ipa
             build.log
           retention-days: 14
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7

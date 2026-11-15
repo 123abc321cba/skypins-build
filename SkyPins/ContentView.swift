@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct ContentView: View {
     @StateObject private var state = AppState()
     @StateObject private var connection = PCConnection()
@@ -34,19 +35,19 @@ struct ContentView: View {
 
                     HStack(spacing: 16) {
                         actionButton(icon: "qrcode.viewfinder", title: "配对",
-                                     width: 76, color: Color.blue) {
+                                     width: 76, color: .blue, disabled: false) {
                             showQRScanner = true
                         }
 
                         actionButton(icon: isProcessing ? "arrow.triangle.2.circlepath" : "radiowaves.right",
                                      title: "扫描徽章", width: 160,
-                                     color: isProcessing ? Color.gray : Color.orange,
+                                     color: isProcessing ? .gray : .orange,
                                      disabled: isProcessing || !state.isConnected) {
                             scanBadge()
                         }
 
                         actionButton(icon: "xmark.circle", title: "断开",
-                                     width: 76, color: Color.red) {
+                                     width: 76, color: .red, disabled: false) {
                             disconnect()
                         }
                     }
@@ -66,7 +67,7 @@ struct ContentView: View {
                                                 Text(record.uid)
                                                     .font(.system(.caption, design: .monospaced))
                                                     .foregroundColor(.white)
-                                                Text("计数: \(record.counter)  \(record.timestamp, style: .time)")
+                                                Text("计数: \(record.counter)")
                                                     .font(.caption2)
                                                     .foregroundColor(.gray)
                                             }
@@ -108,7 +109,7 @@ struct ContentView: View {
     }
 
     private func actionButton(icon: String, title: String, width: CGFloat,
-                              color: Color, disabled: Bool = false,
+                              color: Color, disabled: Bool,
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 6) {
@@ -146,8 +147,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Actions
-
     private func handleScan(_ code: String) {
         guard let data = code.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -167,7 +166,7 @@ struct ContentView: View {
             return
         }
 
-        Task {
+        Task { @MainActor in
             do {
                 state.lastError = nil
                 try await connection.connect(url: wsURL, pcPubkey: pubkey)
@@ -182,42 +181,29 @@ struct ContentView: View {
         state.lastError = nil
 
         nfcReader.scan { badge in
-            var record = badge
-            record.status = .read
-            DispatchQueue.main.async {
+            Task { @MainActor in
+                var record = badge
+                record.status = .sending
                 state.records.insert(record, at: 0)
-                if let idx = state.records.firstIndex(where: { $0.id == record.id }) {
-                    state.records[idx].status = .sending
-                }
-            }
 
-            Task {
-                var finalStatus = BadgeRecord.Status.failed
-                var errText: String?
+                let rid = record.id
                 do {
                     let st = try await connection.sendBadge(record)
-                    if st == "ok" {
-                        finalStatus = .sent
-                    } else {
-                        errText = "PC 拒绝: \(st)"
-                    }
-                } catch {
-                    errText = "发送失败: \(error.localizedDescription)"
-                }
-                let fs = finalStatus
-                let et = errText
-                let rid = record.id
-                DispatchQueue.main.async {
                     if let idx = state.records.firstIndex(where: { $0.id == rid }) {
-                        state.records[idx].status = fs
+                        state.records[idx].status = (st == "ok") ? .sent : .failed
                     }
-                    if let et { state.lastError = et }
-                    isProcessing = false
+                    if st != "ok" { state.lastError = "PC 拒绝: \(st)" }
+                } catch {
+                    if let idx = state.records.firstIndex(where: { $0.id == rid }) {
+                        state.records[idx].status = .failed
+                    }
+                    state.lastError = "发送失败: \(error.localizedDescription)"
                 }
+                isProcessing = false
             }
-        } onError: { error in
-            DispatchQueue.main.async {
-                state.lastError = error
+        } onError: { message in
+            Task { @MainActor in
+                state.lastError = message
                 isProcessing = false
             }
         }
