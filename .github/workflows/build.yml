@@ -4,23 +4,21 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      bundle_id:
-        description: 'Bundle Identifier'
-        default: 'com.skypins.bridge'
 
 jobs:
   build:
-    runs-on: macos-14
-    timeout-minutes: 30
+    runs-on: macos-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
       - name: Toolchain info
         run: |
+          uname -m
           xcodebuild -version
           sw_vers
           xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
 
       - name: Build (unsigned)
         run: |
@@ -39,25 +37,31 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="" \
             DEVELOPMENT_TEAM="" \
             CONFIGURATION_BUILD_DIR=./build/Release-iphoneos \
-            build 2>&1 | tee build.log | tail -n 120
+            build 2>&1 | tee build.log | tail -n 150
+
+      - name: Show errors
+        if: failure()
+        run: |
+          echo "=== error lines ==="
+          grep -nE "error:|warning: .*Swift" build.log | head -n 60 || true
 
       - name: Verify binary
         run: |
-          APP=$(find ./build -maxdepth 3 -name "SkyPins.app" -type d | head -n 1)
+          APP=$(find ./build -maxdepth 4 -name "SkyPins.app" -type d | head -n 1)
           echo "APP=$APP"
           ls -la "$APP"
           file "$APP/SkyPins"
           lipo -info "$APP/SkyPins" || true
-          otool -l "$APP/SkyPins" | grep -A4 -m1 LC_BUILD_VERSION || true
+          otool -l "$APP/SkyPins" | grep -A5 -m1 LC_BUILD_VERSION || true
+          plutil -p "$APP/Info.plist" | head -n 40
 
       - name: Ad-hoc sign and package IPA
         run: |
           set -e
-          APP=$(find ./build -maxdepth 3 -name "SkyPins.app" -type d | head -n 1)
+          APP=$(find ./build -maxdepth 4 -name "SkyPins.app" -type d | head -n 1)
           rm -rf ./Payload ./SkyPins.ipa
           mkdir -p ./Payload
           cp -R "$APP" ./Payload/
-          # 重签嵌入式内容 & 主程序为 ad-hoc（模拟器/USB 侧载或再自行重签）
           codesign --force --sign - --timestamp=none "Payload/SkyPins.app" || true
           codesign -dv --verbose=4 "Payload/SkyPins.app" 2>&1 | head -n 20 || true
           zip -qry SkyPins.ipa ./Payload
@@ -73,12 +77,3 @@ jobs:
             SkyPins.ipa
             build.log
           retention-days: 14
-
-      - name: Upload dSYM
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: SkyPins-dsym
-          path: build/**/*.dSYM
-          if-no-files-found: ignore
-          retention-days: 7
