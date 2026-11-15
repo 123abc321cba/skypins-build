@@ -4,8 +4,7 @@ import Foundation
 /// NFC NDEF 徽章读取器
 /// 读取光遇 NFC 徽章的 NDEF URL: https://sky.thatg.co/?s=TOKEN&c=UIDxCOUNTER
 ///
-/// 并发模型: 非 @MainActor。CoreNFC 回调在后台队列, 所有对外回调统一切回主线程派发,
-/// 避免 Swift 5/6 下 nonisolated delegate 访问主线程隔离成员的编译错误。
+/// 并发模型: 非 @MainActor。CoreNFC 回调在后台队列, 对外回调统一切回主线程派发。
 final class NFCReader: NSObject, @unchecked Sendable {
     private var session: NFCTagReaderSession?
     private var onSuccess: ((BadgeRecord) -> Void)?
@@ -20,7 +19,10 @@ final class NFCReader: NSObject, @unchecked Sendable {
         self.onSuccess = onSuccess
         self.onError = onError
 
-        let s = NFCTagReaderSession(pollingOption: .iso14443, delegate: self)
+        guard let s = NFCTagReaderSession(pollingOption: .iso14443, delegate: self) else {
+            Self.deliver { onError("NFC 会话创建失败") }
+            return
+        }
         s.alertMessage = "将 NFC 徽章靠近手机顶部"
         session = s
         s.begin()
@@ -166,6 +168,7 @@ extension NFCReader: NFCTagReaderSessionDelegate {
 
                     session.alertMessage = "读取成功: \(parsed.uid)"
                     session.invalidate()
+                    _ = self
                     self.succeed(badge)
                 }
             }
